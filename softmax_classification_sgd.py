@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+
+# fellas:
+# 997bc6ac-2546-11ec-986f-f39926f24a9c
+# 647545f8-2a7a-11ec-986f-f39926f24a9c
+# 4820960d-2a7e-11ec-986f-f39926f24a9c
+
 import argparse
 
 import numpy as np
@@ -17,6 +23,29 @@ parser.add_argument("--seed", default=42, type=int, help="Random seed")
 parser.add_argument("--test_size", default=797, type=lambda x: int(x) if x.isdigit() else float(x), help="Test size")
 # If you add more arguments, ReCodEx will keep them with your default values.
 
+def softmax(z, args):
+    z -= np.max(z)
+
+    denominator = 0
+    for i in range(args.classes):
+        denominator += np.exp(z[i])
+
+    result = np.zeros(args.classes)
+    for i in range(args.classes):
+        result[i] = np.exp(z[i]) / denominator
+
+    return result
+
+def GetValueFromPredictions(p):
+    currentMaxIndex = 0
+    currentMaxIndexValue = p[0]
+
+    for index in range(p.shape[0]):
+        if (currentMaxIndexValue < p[index]):
+            currentMaxIndex = index
+            currentMaxIndexValue = p[index]
+
+    return currentMaxIndex
 
 def main(args: argparse.Namespace) -> tuple[np.ndarray, list[tuple[float, float]]]:
     # Create a random generator with a given seed.
@@ -37,7 +66,10 @@ def main(args: argparse.Namespace) -> tuple[np.ndarray, list[tuple[float, float]
 
     # Generate initial model weights.
     weights = generator.uniform(size=[train_data.shape[1], args.classes], low=-0.1, high=0.1)
-    #print(weights.shape)
+
+    ohe = sklearn.preprocessing.OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+
+    transformed_targets = ohe.fit_transform(train_target.reshape(-1, 1))
 
     for epoch in range(args.epochs):
         permutation = generator.permutation(train_data.shape[0])
@@ -45,88 +77,53 @@ def main(args: argparse.Namespace) -> tuple[np.ndarray, list[tuple[float, float]
         # TODO: Process the data in the order of `permutation`. For every
         # `args.batch_size` of them, average their gradient, and update the weights.
         # You can assume that `args.batch_size` exactly divides `train_data.shape[0]`.
-        batch_permutations = np.array(np.split(permutation, len(permutation) / args.batch_size))
-
-        for batch_permutation in batch_permutations:
-            gradient = 0
-            #print(batch_permutation.shape)
-            
-            for index in batch_permutation:
-                #print("index: ")
-                #print(index)
-                y = train_data[index] @ weights
-                
-                for i in range(args.classes):
-                    p = softmax(y)[i]
-                    gradient += (p - train_target[index]) * train_data[index]
-            g = gradient / args.batch_size
-            weights[:,i] = weights[:,i] - args.learning_rate * g
-        y = train_data[1] @ weights
-        """
-        print("y")
-        print(y.shape)
-        """
+        #
         # Note that you need to be careful when computing softmax because the exponentiation
         # in softmax can easily overflow. To avoid it, you should use the fact that
         # $softmax(z) = softmax(z + any_constant)$ and compute $softmax(z) = softmax(z - maximum_of_z)$.
         # That way we only exponentiate non-positive values, and overflow does not occur.
 
+        batch_permutations = np.array(np.split(permutation, len(permutation) / args.batch_size))
+
+        for batch_permutation in batch_permutations:
+            gradient = np.zeros((train_data.shape[1], args.classes))
+            
+            for index in batch_permutation:
+                x = train_data[index] @ weights
+                soft = softmax(x, args)
+                gradient += np.outer(train_data[index], (soft - transformed_targets[index]))
+
+            g = gradient / args.batch_size
+            weights -= args.learning_rate * g
+
         # TODO: After the SGD epoch, measure the average loss and accuracy for both the
         # train test and the test set. The loss is the average MLE loss (i.e., the
         # negative log-likelihood, or cross-entropy loss, or KL loss) per example.
-        TW = train_data @ weights
-        test_weights = test_data @ weights
-        #train_predictions = np.ones((train_data.shape[0], args.classes))
-        #test_predictions = np.ones((train_data.shape[0], args.classes))
-        #print("test predict: ")
-        #print(test_predictions.shape)
-        """
-        print("softmax")
-        print(softmax(train_data @ weights).shape)
-        """
-        train_predictions = softmax(train_data @ weights)
-        test_predictions = softmax(test_data @ weights)
-        """
-        print("test data")
-        print(test_data.shape)
-        print("weights")
-        print(weights.shape)
-        """
-        train_loss = sklearn.metrics.log_loss(train_target, train_predictions)
-        
-        #print("funguje")
-        test_loss = sklearn.metrics.log_loss(test_target, test_predictions)
 
-        train_accuracies = np.ones(args.classes)
-        test_accuracies = np.ones(args.classes)
-        """
-        print("train target")
-        print(train_target.shape)
-        print("TW")
-        print(TW[:,1].shape)
-        """
-        for i in range(args.classes):
-            train_accuracies[i] = sklearn.metrics.accuracy_score(train_target, TW[:,i] >= 0)
-            test_accuracies[i] = sklearn.metrics.accuracy_score(test_target, test_weights[:,i] >= 0)
-        train_accuracy = np.mean(train_accuracies)
-        test_accuracy = np.mean(test_accuracies)
+        train_predictions = np.zeros((train_data.shape[0], args.classes))
+        train_results = np.zeros(train_data.shape[0])
+        for index in range(train_data.shape[0]):
+            train_predictions[index] = softmax(train_data[index] @ weights, args)
+        for index in range(train_results.shape[0]):
+            train_results[index] = GetValueFromPredictions(train_predictions[index])
+
+        test_predictions = np.zeros((test_data.shape[0], args.classes))
+        test_results = np.zeros(test_data.shape[0])
+        for index in range(test_data.shape[0]):
+            test_predictions[index] = softmax(test_data[index] @ weights, args)
+        for index in range(test_results.shape[0]):
+            test_results[index] = GetValueFromPredictions(test_predictions[index])
+
+        train_loss = sklearn.metrics.log_loss(ohe.fit_transform(train_target.reshape(-1, 1)), train_predictions)
+        train_accuracy = sklearn.metrics.accuracy_score(train_target, train_results)
+
+        test_loss = sklearn.metrics.log_loss(ohe.fit_transform(test_target.reshape(-1, 1)), test_predictions)
+        test_accuracy = sklearn.metrics.accuracy_score(test_target, test_results)
+
         print("After epoch {}: train loss {:.4f} acc {:.1f}%, test loss {:.4f} acc {:.1f}%".format(
             epoch + 1, train_loss, 100 * train_accuracy, test_loss, 100 * test_accuracy))
 
     return weights, [(train_loss, 100 * train_accuracy), (test_loss, 100 * test_accuracy)]
-
-def softmax(z):
-    # $softmax(z) = softmax(z + any_constant)$ and compute $softmax(z) = softmax(z - maximum_of_z)$.
-    max_ = np.max(z)
-    z2 = z - max_
-    res = np.ones(z2.shape)
-    class_sum = 0
-    for j in range(args.classes):
-        class_sum += np.exp(z2[j])
-    for i in range(z2.shape[0]):
-        res[i] = z2[i]/class_sum
-    return res
-
 
 if __name__ == "__main__":
     args = parser.parse_args([] if "__file__" not in globals() else None)
